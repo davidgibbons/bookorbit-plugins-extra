@@ -767,9 +767,13 @@ function parseAdded(value) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-/** Sizes are stated in the table as "702 kB" or "10 MB". */
+/**
+ * Sizes are stated in the table as "702 kB" or "10 MB", and carry a thousands separator once they
+ * pass 1000 of a unit. Strip it and anchor the match: an unanchored `[\d.]+` stops at the comma,
+ * resumes after it and reads "1,012.3 kB" as 12.3 kB.
+ */
 function parseSize(value) {
-  const match = /([\d.]+)\s*([KMGT]?i?B)/i.exec(value);
+  const match = /^\s*([\d.]+)\s*([KMGT]?i?B)/i.exec(String(value).replace(/,/g, ''));
   if (!match) return null;
   const units = { b: 1, kb: 1000, kib: 1024, mb: 1000 ** 2, mib: 1024 ** 2, gb: 1000 ** 3, gib: 1024 ** 3, tb: 1000 ** 4, tib: 1024 ** 4 };
   const bytes = Number(match[1]) * (units[match[2].toLowerCase()] ?? 1);

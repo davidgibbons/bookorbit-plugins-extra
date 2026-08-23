@@ -140,6 +140,14 @@ console.log('search against the live ebook page');
   ok('full dates become publishedAt', !dated || dated.publishedAt.endsWith('T00:00:00.000Z'), dated?.publishedAt);
 }
 
+{
+  // Past 1000 of a unit the table separates the thousands, and the separator is not part of the
+  // number: a parser that stops at the comma and resumes after it reads this as 12.3 kB.
+  const host = makeHost(() => res(SEARCH_EBOOK.replace('702 kB', '1,012.3 kB')));
+  const [first] = await plugin.search(query, cfg(), host);
+  ok('a separated size is read whole', first.sizeBytes === 1012300, first.sizeBytes);
+}
+
 console.log('search against the live comics page');
 {
   const host = makeHost(() => res(SEARCH_COMIC));

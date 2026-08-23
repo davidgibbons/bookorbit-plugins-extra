@@ -509,10 +509,15 @@ function readAuthor(raw) {
   }
 }
 
+/**
+ * The tracker states a thousands separator once a size passes 1000 of its unit, as in
+ * "1,012.3 KB". Strip it and anchor the match: an unanchored `[\d.]+` stops at the comma, resumes
+ * after it and reads that release as 12.3 KB, which then scores as an impossibly small book.
+ */
 function parseSize(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value !== 'string') return null;
-  const match = /([\d.]+)\s*([KMGT]?i?B)/i.exec(value);
+  const match = /^\s*([\d.]+)\s*([KMGT]?i?B)/i.exec(value.replace(/,/g, ''));
   if (!match) return toNumber(value);
   const units = { b: 1, kb: 1024, kib: 1024, mb: 1024 ** 2, mib: 1024 ** 2, gb: 1024 ** 3, gib: 1024 ** 3, tb: 1024 ** 4, tib: 1024 ** 4 };
   const scale = units[match[2].toLowerCase()] ?? 1;

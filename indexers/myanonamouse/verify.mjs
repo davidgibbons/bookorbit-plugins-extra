@@ -296,6 +296,11 @@ for (const [raw, expected] of [
   ['1.21 GiB', Math.round(1.21 * 1024 ** 3)],
   ['700 MB', Math.round(700 * 1024 ** 2)],
   ['512 KiB', 512 * 1024],
+  // Past 1000 of a unit the tracker separates the thousands, and the separator is not part of the
+  // number. Reading "1,012.3 KB" as 12.3 KB scored a whole ebook as an impossibly small one.
+  ['1,012.3 KB', Math.round(1012.3 * 1024)],
+  ['1,000 KB', 1000 * 1024],
+  ['2,048.00 MB', 2048 * 1024 ** 2],
   [1234, 1234],
   ['not a size', null],
 ]) {
