@@ -12,20 +12,15 @@
  * `fetchTorrentFile`, reports no swarm counts at all, and needs an HTTP download client rather
  * than a torrent one.
  *
- * A grab is two steps, both cheap and both plain HTTP: the search row carries an md5, and
- * `/ads.php?md5=` answers with a short-lived keyed `get.php` link that redirects to whichever host
- * actually holds the file. Measured 2026-08-20 against libgen.li: a scoped search is 1.3s to 3.1s,
- * and the download link resolves in under a second.
+ * A search row carries the file md5. The catalogue's legacy ads and get endpoints are not reliable
+ * download resolvers anymore, so grabs use the download service's md5 endpoint directly.
  */
 
 const SEARCH_PATH = '/index.php';
-const ADS_PATH = '/ads.php';
-const GET_PATH = '/get.php';
+const DOWNLOAD_ORIGIN = 'https://libgen.download';
 
 /** A full result page of markup, with room to spare. Nothing is buffered past this. */
 const MAX_SEARCH_BYTES = 4 * 1024 * 1024;
-/** One intermediate page, which exists only to carry a single link out of it. */
-const MAX_PAGE_BYTES = 1024 * 1024;
 /** A refusal is a sentence, not a document: enough to read it, little enough to never buffer a page. */
 const MAX_REFUSAL_BYTES = 8 * 1024;
 const MAX_REFUSAL_CHARS = 200;
@@ -85,6 +80,8 @@ const PAGE_SIZE = 50;
  * search keeps turning pages until it has enough usable rows or runs out of room to look.
  */
 const MAX_PAGES = 4;
+/** How much of one search's room the exact pass may take before the text pass gets the rest. */
+const ISBN_PASS_SHARE = 0.5;
 
 /**
  * The self-imposed ceiling on a whole search, against the 20 seconds `PER_INDEXER_TIMEOUT_MS`
@@ -196,7 +193,11 @@ const ISO_639_2_TO_1 = {
 
 export default {
   apiVersion: 1,
-  version: '1.0.0',
+  version: '1.1.6',
+  update: {
+    manifestUrl: 'https://raw.githubusercontent.com/orbit-plugins/bookorbit-plugins-extra/main/updates/libgen.json',
+    ed25519PublicKey: 'W2ER7l0MxMLSxNvfpF5uNg421kAuGxlwlkyFUcpzHrk',
+  },
   type: 'libgen',
   label: 'Library Genesis',
   requiresCredential: false,
@@ -257,11 +258,17 @@ export default {
 
     const found = { releases: [], seen: new Set(), started: Date.now(), slowestPageMs: 0, pages: 0 };
     const passes = [];
-    // One page is enough for an ISBN because every row is the same edition.
-    if (/^\d{13}$/.test(query.isbn13 ?? '')) passes.push({ req: query.isbn13, columns: ISBN_COLUMNS, maxPages: 1 });
+    // One page is enough for an ISBN because every row is the same edition, and it is held to a
+    // share of the limit so it cannot spend the whole of it. A full page of exact hits used to end
+    // the search before the text pass ran at all, which is the one case where the exact pass is
+    // least trustworthy: this catalogue records an ISBN against the wrong row often enough that
+    // fifty of them are more likely a loose column match than fifty printings of one edition.
+    if (/^\d{13}$/.test(query.isbn13 ?? '')) {
+      passes.push({ req: query.isbn13, columns: ISBN_COLUMNS, maxPages: 1, cap: Math.max(1, Math.floor(query.limit * ISBN_PASS_SHARE)) });
+    }
     // Text searches retain bounded paging so language and format filtering can look past a full
     // unsuitable first page.
-    passes.push({ req: host.buildSearchText(query), columns: TEXT_COLUMNS[query.mediaKind] ?? [], maxPages: MAX_PAGES });
+    passes.push({ req: host.buildSearchText(query), columns: TEXT_COLUMNS[query.mediaKind] ?? [], maxPages: MAX_PAGES, cap: query.limit });
 
     let failure = null;
     for (const pass of passes) {
@@ -301,52 +308,23 @@ export default {
     }
   },
 
-  /**
-   * Resolved for the one release an approver picked rather than during the search, because it costs
-   * a request per release and the key it comes back with is short lived.
-   */
+  /** Resolved only after an approver picks a release. */
   async resolveFile(release, config, host) {
     const md5 = md5Of(release);
     if (!md5) throw host.fail('error', 'that release carries no md5, so there is nothing to look up');
 
-    const base = baseOf(config);
-    const adsUrl = new URL(`${base}${ADS_PATH}`);
-    adsUrl.searchParams.set('md5', md5);
-
-    const html = await readPage(host, adsUrl.href, MAX_PAGE_BYTES, config);
-    const href = firstGetLink(html);
-
-    // The keyless form is what the comics collection links to directly, and it answers the same
-    // redirect. Worth falling back to rather than failing the grab over a missing key.
-    const url = href ? new URL(href, adsUrl).href : `${base}${GET_PATH}?md5=${md5}`;
-    if (!href) host.logger.warn(`[libgen.resolve] [fail] indexerId=${config.id} md5=${md5} - no keyed link on the page, falling back to the plain one`);
-
-    host.logger.log(`[libgen.resolve] [end] indexerId=${config.id} md5=${md5} keyed=${Boolean(href)} - download link resolved`);
-    return toFile(url, release, host);
+    const url = new URL('/api/download', DOWNLOAD_ORIGIN);
+    url.searchParams.set('id', md5);
+    host.logger.log(
+      `[libgen.resolve] [end] indexerId=${config.id} md5=${md5} - download link resolved`,
+    );
+    return toFile(url.href, release, host);
   },
 };
 
 /**
- * The intermediate page writes the link several ways depending on which of its templates answered,
- * so the narrowest pattern is tried first and the loosest last.
- */
-const GET_LINK_PATTERNS = [
-  /<a\s+href=["']([^"']*get\.php\?md5=[^"']+&(?:amp;)?key=[^"']+)["'][^>]*>\s*<h2[^>]*>\s*GET\s*<\/h2>/i,
-  /<a[^>]+href=["']([^"']*get\.php\?md5=[^"']+&(?:amp;)?key=[^"']+)["']/i,
-  /href=["']([^"']*get\.php\?[^"']*md5=[^"']*&(?:amp;)?[^"']*key=[^"']+)["']/i,
-];
-
-function firstGetLink(html) {
-  for (const pattern of GET_LINK_PATTERNS) {
-    const match = pattern.exec(html);
-    if (match?.[1]) return decodeEntities(match[1]);
-  }
-  return null;
-}
-
-/**
- * The name the file lands under. Built from the release rather than from the link, because the link
- * is `get.php` and the real name only appears on a redirect the download client follows later.
+ * The name the file lands under. Built from the release because the download URL identifies the
+ * file by md5 and the real name only appears after the download client follows its redirect.
  */
 function toFile(url, release, host) {
   const format = (release.format ?? '').toLowerCase();
@@ -529,7 +507,7 @@ async function readPass(pass, query, config, formats, host, signal, found) {
       if (!languagesAgree(query.language, release.language)) continue;
       found.seen.add(release.guid);
       found.releases.push(release);
-      if (found.releases.length >= query.limit) return;
+      if (found.releases.length >= pass.cap) return;
     }
 
     // Counted from the rows the site actually filled rather than from the parsed ones, because a

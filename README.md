@@ -3,6 +3,16 @@
 Indexer plugins for [BookOrbit](https://github.com/bookorbit/bookorbit). BookOrbit ships the loader;
 these are plugins, maintained separately.
 
+Every plugin publishes signed updates. The private Ed25519 key stays outside the repository. After
+changing a plugin version, regenerate its manifest before publishing:
+
+```sh
+BOOKORBIT_PLUGIN_SIGNING_KEY=/path/to/private-key.pem node scripts/sign-update.mjs <plugin>
+```
+
+The manifest signs the exact `index.mjs` bytes. BookOrbit verifies its SHA-256 and signature before
+offering or automatically installing an update.
+
 | Plugin            | Media                   | Credential         | Grabs        |
 | ----------------- | ----------------------- | ------------------ | ------------ |
 | **libgen**        | ebook, comic            | none               | direct file  |
@@ -13,7 +23,8 @@ decision and your responsibility.
 
 ## Installing
 
-Copy a plugin's directory into BookOrbit's app data and restart:
+Install the plugin's `index.mjs` from BookOrbit's Requests settings, or copy its directory into the
+app data path and restart:
 
 ```
 <APP_DATA_PATH>/plugins/indexers/<name>/index.mjs
@@ -22,9 +33,9 @@ Copy a plugin's directory into BookOrbit's app data and restart:
 `APP_DATA_PATH` is `/data` in the container, already mounted as a writable volume. Only `index.mjs`
 is needed at runtime; `verify.mjs` and `fixtures/` are development files.
 
-After the restart the plugin appears in the indexer type list under **Settings > System > Requests**
-and is configured like any other indexer. Nothing is enabled until you add it there. There is no hot
-reload, and a plugin that fails to load is reported at the top of that page.
+The plugin appears in the indexer type list under **Settings > System > Requests** and is configured
+like any other indexer. Browser installs and signed updates activate immediately. Nothing is enabled
+until you add a source, and a plugin that fails to load is reported at the top of that page.
 
 ## Trust
 

@@ -4,6 +4,7 @@
  *
  * Run with: node verify.mjs
  */
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +13,12 @@ import plugin from './index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => readFileSync(join(here, 'fixtures', name), 'utf8');
+const source = readFileSync(join(here, 'index.mjs'));
+const manifest = JSON.parse(readFileSync(join(here, '..', '..', 'updates', 'libgen.json'), 'utf8'));
+const updateKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: plugin.update.ed25519PublicKey }, format: 'jwk' });
 
 const SEARCH_EBOOK = fixture('lg.html'); // "project hail mary", objects=f, topics=l, res=25
 const SEARCH_COMIC = fixture('rc.html'); // "batman", objects=f, topics=c, res=25
-const ADS_PAGE = fixture('ads.html'); // /ads.php?md5=e7c75dc2964ce80c19cb69140aae8614
 // "Rose Madder Stephen King", res=50, pages 1 and 2. Real crowding: 32 Spanish rows against 9
 // English on the first page, which is the case that made paging necessary.
 const CROWDED_1 = fixture('crowded-page1.html');
@@ -69,7 +72,7 @@ function makeHost(responder) {
         .replace(/\s+/g, ' ')
         .trim(),
     saveCredential: async () => {},
-    fail: (code, message) => Object.assign(new Error(message), { code }),
+    fail: (failure, message) => Object.assign(new Error(message), { failure }),
   };
 }
 
@@ -95,7 +98,14 @@ const query = {
 
 console.log('descriptor');
 ok('type slug', plugin.type === 'libgen');
-ok('plugin version', plugin.version === '1.0.0');
+ok('plugin version', plugin.version === '1.1.6');
+ok('signed update channel', /^https:\/\//.test(plugin.update?.manifestUrl ?? '') && /^[A-Za-z0-9_-]{43}$/.test(plugin.update?.ed25519PublicKey ?? ''));
+ok(
+  'signed update manifest',
+  manifest.version === plugin.version &&
+    manifest.sha256 === createHash('sha256').update(source).digest('hex') &&
+    verify(null, source, updateKey, Buffer.from(manifest.signature, 'base64')),
+);
 ok('no credential of any kind', plugin.requiresCredential === false && plugin.credentialKind === null);
 ok('resolveFile only', typeof plugin.resolveFile === 'function' && plugin.fetchTorrentFile === undefined);
 ok('no seeding', plugin.seedsBack === false);
@@ -185,18 +195,18 @@ console.log('search options and failures');
 {
   const host = makeHost(() => res(SEARCH_EBOOK));
   const err = await plugin.search(query, cfg({ settings: { ebookFormats: 'm4b,flac' } }), host).catch((e) => e);
-  ok('no usable format is unsupportedMedium', err.code === 'unsupportedMedium', err.code);
+  ok('no usable format is unsupportedMedium', err.failure === 'unsupportedMedium', err.failure);
   ok('and costs no request', host.calls.length === 0);
 }
 {
   const host = makeHost(() => res('<html><body><p>nothing like this site</p></body></html>'));
   const err = await plugin.search(query, cfg(), host).catch((e) => e);
-  ok('missing table is not reported as empty', err.code === 'unreachable', err.code);
+  ok('missing table is not reported as empty', err.failure === 'unreachable', err.failure);
 }
 {
   const host = makeHost(() => res(NO_HITS));
   const out = await plugin.search(query, cfg(), host).catch((e) => e);
-  ok('a zero-hit page is empty, not a failure', Array.isArray(out) && out.length === 0, out.code ?? out);
+  ok('a zero-hit page is empty, not a failure', Array.isArray(out) && out.length === 0, out.failure ?? out);
   ok('and costs exactly one request', host.calls.length === 1, host.calls.length);
 }
 console.log('the isbn pass');
@@ -255,7 +265,7 @@ console.log('the isbn pass');
   // must not turn into one: the request genuinely has nothing here.
   const host = makeHost(() => res(ISBN_MISS));
   const out = await plugin.search({ ...query, isbn13: '9781728270258' }, cfg(), host).catch((e) => e);
-  ok('both passes empty is an empty result, not a failure', Array.isArray(out) && out.length === 0, out.code ?? out);
+  ok('both passes empty is an empty result, not a failure', Array.isArray(out) && out.length === 0, out.failure ?? out);
 }
 {
   // The recovery is a bonus query. It has already been proved that the mirror answers, so a
@@ -265,24 +275,24 @@ console.log('the isbn pass');
     throw new Error('connection reset');
   });
   const out = await plugin.search({ ...query, isbn13: '9780593135211' }, cfg(), host).catch((e) => e);
-  ok('a failed recovery keeps the exact rows', Array.isArray(out) && out.length > 0, out.code ?? out);
+  ok('a failed recovery keeps the exact rows', Array.isArray(out) && out.length > 0, out.failure ?? out);
 }
 {
   const host = makeHost((url) => (new URL(url).searchParams.getAll('columns[]').join() === 'i' ? res('boom', { status: 500 }) : res(SEARCH_EBOOK)));
   const out = await plugin.search({ ...query, isbn13: '9780593135211' }, cfg(), host).catch((error) => error);
-  ok('an isbn pass that fails outright does not fail the search', Array.isArray(out) && out.length > 0, out.code ?? out);
+  ok('an isbn pass that fails outright does not fail the search', Array.isArray(out) && out.length > 0, out.failure ?? out);
   ok('and the text pass still ran', host.calls.length === 2, host.calls.length);
 }
 {
   const host = makeHost(() => res('boom', { status: 500 }));
   const err = await plugin.search({ ...query, isbn13: '9780593135211' }, cfg(), host).catch((error) => error);
-  ok('both passes failing does fail the search', err.code === 'error', err.code);
+  ok('both passes failing does fail the search', err.failure === 'error', err.failure);
   ok('and it reports the first failure rather than swallowing it', /500/.test(err.message), err.message);
 }
 {
   const host = makeHost(() => res(SEARCH_EBOOK));
   const out = await plugin.search({ ...query, isbn13: '9780593135211', limit: 2 }, cfg(), host);
-  ok('a filled limit stops before the text pass', host.calls.length === 1, host.calls.length);
+  ok('a filled ISBN page leaves room for the text pass', host.calls.length === 2, host.calls.length);
   ok('and returns the limit', out.length === 2, out.length);
 }
 
@@ -307,12 +317,12 @@ console.log('isbns off the row');
 {
   const host = makeHost(() => res('slow down', { status: 429 }));
   const err = await plugin.search(query, cfg(), host).catch((e) => e);
-  ok('429 throttled', err.code === 'throttled', err.code);
+  ok('429 throttled', err.failure === 'throttled', err.failure);
 }
 {
   const host = makeHost(() => res('boom', { status: 500 }));
   const err = await plugin.search(query, cfg(), host).catch((e) => e);
-  ok('500 carries the mirror wording', err.code === 'error' && err.message.includes('500'), err.message);
+  ok('500 carries the mirror wording', err.failure === 'error' && err.message.includes('500'), err.message);
 }
 {
   const host = makeHost(() => res(SEARCH_EBOOK));
@@ -387,30 +397,27 @@ console.log('paging past a crowded page');
   ok('a failed first page still fails the search', err instanceof Error && /connection reset/.test(err.message), err?.message);
 }
 
-console.log('resolveFile against the live ads page');
+console.log('resolveFile');
 const release = { guid: 'e7c75dc2964ce80c19cb69140aae8614', title: 'Dune: A Novel', format: 'epub', sizeBytes: 702000 };
 {
-  const host = makeHost(() => res(ADS_PAGE));
+  const host = makeHost(() => {
+    throw new Error('resolveFile must not fetch the unreliable legacy endpoint');
+  });
   const file = await plugin.resolveFile(release, cfg(), host);
-  ok('asks the ads page', host.calls[0] === `https://libgen.li/ads.php?md5=${release.guid}`, host.calls[0]);
-  ok('keyed link extracted', /^https:\/\/libgen\.li\/get\.php\?md5=[a-f0-9]{32}&key=[A-Z0-9]+$/.test(file.url), file.url);
+  ok('uses the current md5 download endpoint', file.url === `https://libgen.download/api/download?id=${release.guid}`, file.url);
+  ok('does not call the broken legacy resolver', host.calls.length === 0, host.calls);
   ok('filename from the release', file.fileName === 'Dune A Novel.epub', file.fileName);
   ok('format and size carried', file.format === 'epub' && file.sizeBytes === 702000);
 }
 {
-  const host = makeHost(() => res('<html><body>no link here</body></html>'));
-  const file = await plugin.resolveFile(release, cfg(), host);
-  ok('falls back to the keyless link', file.url === `https://libgen.li/get.php?md5=${release.guid}`, file.url);
-}
-{
-  const host = makeHost(() => res(ADS_PAGE));
+  const host = makeHost(() => res(''));
   const err = await plugin.resolveFile({ ...release, guid: 'not-an-md5' }, cfg(), host).catch((e) => e);
-  ok('bad guid refused before any request', host.calls.length === 0 && err.code === 'error');
+  ok('bad guid refused before any request', host.calls.length === 0 && err.failure === 'error');
 }
 {
-  const host = makeHost(() => res(ADS_PAGE));
+  const host = makeHost(() => res(''));
   const err = await plugin.resolveFile({ ...release, format: undefined }, cfg(), host).catch((e) => e);
-  ok('a release with no format is refused, not guessed', err.code === 'error', err.message);
+  ok('a release with no format is refused, not guessed', err.failure === 'error', err.message);
 }
 
 console.log('test()');

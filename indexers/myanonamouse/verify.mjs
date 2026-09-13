@@ -12,7 +12,17 @@
  *
  * Run with: node verify.mjs
  */
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import plugin from './index.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const source = readFileSync(join(here, 'index.mjs'));
+const manifest = JSON.parse(readFileSync(join(here, '..', '..', 'updates', 'myanonamouse.json'), 'utf8'));
+const updateKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: plugin.update.ed25519PublicKey }, format: 'jwk' });
 
 let pass = 0;
 let fail = 0;
@@ -103,7 +113,14 @@ ok('needs a session credential', plugin.requiresCredential === true && plugin.cr
 ok('carries all three media', JSON.stringify(plugin.mediaKinds) === '["ebook","audiobook","comic"]');
 ok('joins a swarm and uses categories', plugin.seedsBack === true && plugin.usesCategories === true);
 ok('targets the contract this build speaks', plugin.apiVersion === 1);
-ok('plugin version', plugin.version === '1.0.0');
+ok('plugin version', plugin.version === '1.0.1');
+ok('signed update channel', plugin.update?.manifestUrl.endsWith('/updates/myanonamouse.json') && plugin.update.ed25519PublicKey.length === 43);
+ok(
+  'signed update manifest',
+  manifest.version === plugin.version &&
+    manifest.sha256 === createHash('sha256').update(source).digest('hex') &&
+    verify(null, source, updateKey, Buffer.from(manifest.signature, 'base64')),
+);
 ok('offers the seedbox toggle, off by default', plugin.settingsFields?.[0]?.key === 'dynamicSeedbox' && plugin.settingsFields[0].default === false);
 // It has no comic category of its own, so comics fall back to the ebook one.
 ok('defaults comics to the ebook category', JSON.stringify(plugin.defaultCategories.comic) === JSON.stringify(plugin.defaultCategories.ebook));

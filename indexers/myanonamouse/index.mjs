@@ -118,7 +118,11 @@ const seedboxTouchedAt = new Map();
 
 export default {
   apiVersion: 1,
-  version: '1.0.0',
+  version: '1.0.1',
+  update: {
+    manifestUrl: 'https://raw.githubusercontent.com/orbit-plugins/bookorbit-plugins-extra/main/updates/myanonamouse.json',
+    ed25519PublicKey: 'W2ER7l0MxMLSxNvfpF5uNg421kAuGxlwlkyFUcpzHrk',
+  },
   type: 'myanonamouse',
   label: 'MyAnonaMouse',
   requiresCredential: true,
